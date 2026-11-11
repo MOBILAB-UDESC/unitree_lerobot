@@ -103,12 +103,9 @@ def eval_policy(
                 f"policy state has {state_dim} values, but arm={cfg.arm} ee='{cfg.ee or 'none'}' "
                 f"waist={has_waist} gives {base_dim + int(has_waist)}{hint}"
             )
-        drive_waist = has_waist and (not cfg.motion or cfg.motion_waist)
+        drive_waist = has_waist  # debug mode: on rt/lowcmd; motion mode: on rt/arm_sdk, next to the arms
         if has_waist and cfg.motion:
-            logger_mp.warning(
-                "motion mode: the policy's waist action is sent through rt/arm_sdk" if drive_waist else
-                "motion mode: the waist is left alone, the policy's waist action is ignored (--motion_waist=true drives it)"
-            )
+            logger_mp.info("motion mode: the waist is driven through rt/arm_sdk while Unitree's controller balances the legs")
         logger_mp.info(
             f"State/action layout: {arm_dof} arm + {base_dim - arm_dof} hand + {int(has_waist)} waist yaw | "
             f"limits: max_vel {cfg.max_vel} rad/s, max_lead {cfg.max_lead} rad (0 = off)"

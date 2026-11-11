@@ -14,7 +14,7 @@
 > | Fix | Flag |
 > | --- | --- |
 > | Policies trained with the waist yaw joint (state/action = arms + hands + waist, waist last) | `--waist=true`. **Only for such policies.** Default off = Unitree's layout (arms + hands). With the wrong setting the script stops before moving and says which one the policy needs |
-> | Robot standing by itself in Unitree's walking mode (`--motion=true`): the waist can be driven too, on `rt/arm_sdk` next to the arms, while Unitree's controller balances the legs | `--motion_waist=true` (with `--waist=true`). Default off: in walking mode the waist is left alone |
+> | Robot standing by itself in Unitree's walking mode: a waist policy drives the waist there too, on `rt/arm_sdk` next to the arms, while Unitree's controller balances the legs | `--motion=true` (Unitree's flag) together with `--waist=true`; no extra flag |
 > | Safety limits on the arm and waist commands, also for the move to the start pose | `--max_vel` (default 1.0 rad/s), `--max_lead` (default 0.25 rad). `--max_vel=0` restores Unitree's unlimited jump to the start pose |
 > | The arms hold their current pose when the script connects (Unitree's controller starts with an all-zero arm target) | always on |
 > | The control loop no longer pauses while the network computes a new action chunk | `--replan=async` (default); `--replan=chunk` is the original behaviour |
@@ -316,7 +316,8 @@ To test your trained model on a real robot, you can use the eval_g1.py script lo
 # --image_host: Address of the image server, default 192.168.123.164.
 # --threads: PyTorch CPU threads, for a PC without a GPU (e.g. 4); default 0 = unchanged.
 # --sim: true to talk to a simulator (DDS domain 1) instead of the robot.
-# --motion_waist: with --motion=true and --waist=true, also drive the waist (through rt/arm_sdk). Default false.
+# --motion: Unitree's flag, true when the robot stands in its walking mode (Unitree's controller balances the
+#           legs). The arms, and the waist with --waist=true, are then sent on rt/arm_sdk.
 
 
 python unitree_lerobot/eval_robot/eval_g1.py  \
