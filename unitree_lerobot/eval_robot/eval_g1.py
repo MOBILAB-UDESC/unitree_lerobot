@@ -103,8 +103,12 @@ def eval_policy(
                 f"policy state has {state_dim} values, but arm={cfg.arm} ee='{cfg.ee or 'none'}' "
                 f"waist={has_waist} gives {base_dim + int(has_waist)}{hint}"
             )
+        drive_waist = has_waist and (not cfg.motion or cfg.motion_waist)
         if has_waist and cfg.motion:
-            logger_mp.warning("motion mode: the motion controller owns the waist, the policy's waist action is ignored")
+            logger_mp.warning(
+                "motion mode: the policy's waist action is sent through rt/arm_sdk" if drive_waist else
+                "motion mode: the waist is left alone, the policy's waist action is ignored (--motion_waist=true drives it)"
+            )
         logger_mp.info(
             f"State/action layout: {arm_dof} arm + {base_dim - arm_dof} hand + {int(has_waist)} waist yaw | "
             f"limits: max_vel {cfg.max_vel} rad/s, max_lead {cfg.max_lead} rad (0 = off)"
@@ -172,7 +176,7 @@ def eval_policy(
                     tick_start = time.perf_counter()
                     prev_cmd = limit_command(init_target, prev_cmd, measure(), cfg.max_vel, cfg.max_lead, cfg.frequency)
                     arm_ctrl.ctrl_dual_arm(prev_cmd[:arm_dof], arm_ik.solve_tau(prev_cmd[:arm_dof]))
-                    if has_waist and not cfg.motion:
+                    if drive_waist:
                         arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
                     time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - tick_start)))
                 time.sleep(0.5)  # let the arms settle
@@ -238,7 +242,7 @@ def eval_policy(
                 arm_action = prev_cmd[:arm_dof]
                 tau = arm_ik.solve_tau(arm_action)
                 arm_ctrl.ctrl_dual_arm(arm_action, tau)
-                if has_waist and not cfg.motion:
+                if drive_waist:
                     arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
 
                 if cfg.ee:

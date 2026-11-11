@@ -244,6 +244,9 @@ class EvalRealConfig:
     threads: int = 0
     # the policy also has the waist yaw joint, as the LAST value of its state and action (arms + hands + waist)
     waist: bool = False
+    # with --motion=true (robot standing in Unitree's walking mode) and --waist=true: also drive the waist yaw,
+    # through rt/arm_sdk. Default: the waist stays where it is in motion mode.
+    motion_waist: bool = False
     # safety limits on the arm (and waist) commands, 0 = off:
     # max_vel  [rad/s] how fast a joint command may change
     # max_lead [rad]   how far a joint command may be ahead of the measured joint
