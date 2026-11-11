@@ -23,6 +23,31 @@
 > | More CPU threads for the network when there is no GPU | `--threads=4` (default `0` = PyTorch's own setting) |
 > | Use a simulator instead of the robot; use a local dataset folder | `--sim=true`, `--root=/path/to/dataset` |
 >
+> **Example: the lab's ACT model with the waist.** [`mobilab-udesc/act-g1-box-into-box-sim`](https://huggingface.co/mobilab-udesc/act-g1-box-into-box-sim) was trained on [`mobilab-udesc/g1_box_into_box_sim_scripted`](https://huggingface.co/datasets/mobilab-udesc/g1_box_into_box_sim_scripted): 14 arm joints + waist yaw, no hands, three cameras (`cam_head`, `cam_left_wrist`, `cam_right_wrist`).
+>
+> ```bash
+> # 1. download the model (the repo root is the step 100,000 checkpoint; checkpoints/040000 ... 100000 hold the others)
+> hf download mobilab-udesc/act-g1-box-into-box-sim --local-dir act-g1-box-into-box-sim
+>
+> # 2a. robot hanging on the gantry, in debug mode (L2+R2): the script holds the legs, the model moves arms and waist
+> python unitree_lerobot/eval_robot/eval_g1.py \
+>     --policy.path=act-g1-box-into-box-sim \
+>     --repo_id=mobilab-udesc/g1_box_into_box_sim_scripted \
+>     --arm=G1_29 --ee=none --waist=true --frequency=30
+>
+> # 2b. robot standing by itself in Unitree's walking mode (R1+X): Unitree's controller balances the legs,
+> #     the model moves arms and waist
+> python unitree_lerobot/eval_robot/eval_g1.py \
+>     --policy.path=act-g1-box-into-box-sim \
+>     --repo_id=mobilab-udesc/g1_box_into_box_sim_scripted \
+>     --arm=G1_29 --ee=none --waist=true --motion=true --frequency=30
+> ```
+>
+> - A policy **without** the waist joint (14 arm joints, e.g. trained on `mobilab-udesc/UnitreeG1-CubePickAndPlace-LeRobot`): the same commands without `--waist=true`.
+> - On a PC without a GPU add `--policy.device=cpu --threads=4`.
+> - The script asks for `s` before it moves. It then goes to the dataset's first pose at no more than `--max_vel` and starts the policy.
+> - This model learned motions of up to 2.1 rad/s. With the default limits (1.0 rad/s, 0.25 rad) it runs slower than its plan; in the simulator it then placed the box in about half of the runs, against nearly all runs with `--max_vel=2.5 --max_lead=0.9`. Raise the limits on the real robot only once the slow runs look right.
+>
 > Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`. `--waist=true` needs `--arm=G1_29`.
 >
 > Tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim) with a 15-joint ACT policy. **Not yet tested on the real robot, with hands, or with a policy without the waist.** The other scripts (`eval_g1_sim.py`, `eval_g1_dataset.py`, `replay_robot.py`) are Unitree's, unchanged.
