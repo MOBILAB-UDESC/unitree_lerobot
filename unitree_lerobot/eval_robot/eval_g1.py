@@ -5,6 +5,7 @@ Refer to:   lerobot/lerobot/scripts/eval.py
 """
 
 import time
+import cv2
 import torch
 import logging
 import traceback
@@ -108,7 +109,29 @@ def eval_policy(
             f"State/action layout: {arm_dof} arm + {base_dim - arm_dof} hand + {int(has_waist)} waist yaw | "
             f"limits: max_vel {cfg.max_vel} rad/s, max_lead {cfg.max_lead} rad (0 = off)"
         )
+        # Cameras: the policy decides which views are used (the ones it was trained with); the image server's
+        # config says which ones exist. Views the policy does not have are simply not fed to it.
         image_keys = list(policy.config.image_features)
+        prefix = "observation.images."
+        available = []
+        if camera_config["head_camera"]["enable_zmq"]:
+            available.append(prefix + "cam_left_high")
+            if camera_config["head_camera"].get("binocular", True):
+                available.append(prefix + "cam_right_high")
+        for side in ("left", "right"):
+            if camera_config[f"{side}_wrist_camera"]["enable_zmq"]:
+                available.append(f"{prefix}cam_{side}_wrist")
+        available = [cfg.rename_map.get(k, k) for k in available]
+        logger_mp.info(
+            f"Cameras used by the policy: {[k[len(prefix):] for k in image_keys]} | "
+            f"sent by the image server: {[k[len(prefix):] for k in available]}"
+        )
+        if not_sent := [k[len(prefix):] for k in image_keys if k not in available]:
+            raise ValueError(
+                f"the policy needs the camera(s) {not_sent}, but the image server does not send them "
+                f"(enable them in the image server's camera config, or use --rename_map if only the name differs)"
+            )
+        image_shapes = {k: tuple(policy.config.image_features[k].shape[-2:]) for k in image_keys}  # (H, W)
         device = get_safe_torch_device(policy.config.device)
         actor = None
         if cfg.replan == "async":
@@ -168,6 +191,14 @@ def eval_policy(
                     logger_mp.warning(f"Waiting for {missing or 'the arm state'}")
                     time.sleep(0.1)
                     continue
+                # the policy gets its images at the size it was trained with
+                for name in list(observation):
+                    height_width = image_shapes.get(cfg.rename_map.get(name, name))
+                    if height_width and tuple(observation[name].shape[:2]) != height_width:
+                        resized = cv2.resize(
+                            observation[name].numpy(), (height_width[1], height_width[0]), interpolation=cv2.INTER_AREA
+                        )
+                        observation[name] = torch.from_numpy(resized)
                 left_ee_state = right_ee_state = np.array([])
                 if cfg.ee:
                     with ee_shared_mem["lock"]:

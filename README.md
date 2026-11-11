@@ -18,6 +18,7 @@
 > | The arms hold their current pose when the script connects (Unitree's controller starts with an all-zero arm target) | always on |
 > | The control loop no longer pauses while the network computes a new action chunk | `--replan=async` (default); `--replan=chunk` is the original behaviour |
 > | Works with the current image client; arms-only robots; one-lens head camera | `--image_host` (default `192.168.123.164`), `--ee=none`; the head camera follows the image server's `binocular` setting |
+> | Cameras follow the policy: only the views the policy was trained with are fed to it (one head view; wrist views only if it has them). A stereo head camera gives its left half, a one-lens camera the whole frame. Images are resized to the policy's training size. The script prints both lists at start and stops if the image server does not send a view the policy needs | automatic; which cameras exist is set in the image server's camera config (`enable_zmq`, `binocular`); `--rename_map` if a camera name differs |
 > | More CPU threads for the network when there is no GPU | `--threads=4` (default `0` = PyTorch's own setting) |
 > | Use a simulator instead of the robot; use a local dataset folder | `--sim=true`, `--root=/path/to/dataset` |
 >
