@@ -15,11 +15,18 @@
 > | --- | --- |
 > | Policies trained with the waist yaw joint (state/action = arms + hands + waist, waist last) | `--waist=true`. **Only for such policies.** Default off = Unitree's layout (arms + hands). With the wrong setting the script stops before moving and says which one the policy needs |
 > | Robot standing by itself in Unitree's walking mode: a waist policy drives the waist there too, on `rt/arm_sdk` next to the arms, while Unitree's controller balances the legs | `--motion=true` (Unitree's flag) together with `--waist=true`; no extra flag |
-> | Safety limits on the arm and waist commands, also for the move to the start pose | `--max_vel` (default 1.0 rad/s), `--max_lead` (default 0.25 rad). `--max_vel=0` restores Unitree's unlimited jump to the start pose |
-> | The arms hold their current pose when the script connects (Unitree's controller starts with an all-zero arm target) | always on |
+> | Safety limits on the arm and waist commands | `--max_vel` (default 1.0 rad/s), `--max_lead` (default 0.25 rad), `0` = off |
+> | The move to the dataset's start pose is speed-limited (it used to be a jump) and waits until the joints are there | `--max_vel` (0.5 rad/s if it is 0) |
+> | The arms hold their current pose when the controller starts (they used to move to the zero pose at up to 20 rad/s while the script waited for `s`) | always on |
 > | The control loop no longer pauses while the network computes a new action chunk | `--replan=async` (default); `--replan=chunk` is the original behaviour |
 > | Works with the current image client; arms-only robots; one-lens head camera | `--image_host` (default `192.168.123.164`), `--ee=none`; the head camera follows the image server's `binocular` setting |
 > | Cameras follow the policy: only the views the policy was trained with are fed to it (one head view; wrist views only if it has them). A stereo head camera gives its left half, a one-lens camera the whole frame. Images are resized to the policy's training size. The script prints both lists at start and stops if the image server does not send a view the policy needs | automatic; which cameras exist is set in the image server's camera config (`enable_zmq`, `binocular`); `--rename_map` if a camera name differs |
+> | Works with teleimager 2.x camera servers (cameras nested under `camera` in their config) | automatic |
+> | Dry run: live joints and cameras, the policy runs, nothing is sent to the robot; logs how far the policy wants to move | `--dry_run=true` |
+> | Stopping a live run in walking mode (Ctrl-C, an error, SIGTERM/SIGHUP such as a dropped SSH connection, or never typing `s`) hands the upper body back: waist and arms return to the pose they had at startup (at `--max_vel`), then the `rt/arm_sdk` weight goes 1 → 0 over 2 s. The planning thread of `--replan=async` is stopped cleanly; a Ctrl-C used to abort the process (exit code 134) | always on |
+> | The start pose against the robot's current pose is printed per joint, by name, before the `s` prompt | always on |
+> | Once a second a live run logs how far the joints are from the command that was sent, so a robot that is not following is visible | always on |
+> | rerun is only imported with `--visualization=true`, so it need not be installed (rerun-sdk >= 0.24 needs numpy 2, which the robot's pinocchio build does not support) | |
 > | More CPU threads for the network when there is no GPU | `--threads=4` (default `0` = PyTorch's own setting) |
 > | Use a simulator instead of the robot; use a local dataset folder | `--sim=true`, `--root=/path/to/dataset` |
 >
@@ -45,12 +52,13 @@
 >
 > - A policy **without** the waist joint (14 arm joints, e.g. trained on `mobilab-udesc/UnitreeG1-CubePickAndPlace-LeRobot`): the same commands without `--waist=true`.
 > - On a PC without a GPU add `--policy.device=cpu --threads=4`.
-> - The script asks for `s` before it moves. It then goes to the dataset's first pose at no more than `--max_vel` and starts the policy.
+> - Try `--dry_run=true` first: nothing is sent to the robot, and the log shows what the policy would do.
+> - The script prints the start pose next to the robot's current pose and asks for `s` before it moves. It then goes to the dataset's first pose at no more than `--max_vel` and starts the policy.
 > - This model learned motions of up to 2.1 rad/s. With the default limits (1.0 rad/s, 0.25 rad) it runs slower than its plan; in the simulator it then placed the box in about half of the runs, against nearly all runs with `--max_vel=2.5 --max_lead=0.9`. Raise the limits on the real robot only once the slow runs look right.
 >
-> Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`. `--waist=true` needs `--arm=G1_29`.
+> Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`, `image_server/image_client.py`; robot-free tests in `test/test_eval_safety.py`. `--waist=true` needs `--arm=G1_29`.
 >
-> Tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim) with a 15-joint ACT policy. **Not yet tested on the real robot, with hands, or with a policy without the waist.** The other scripts (`eval_g1_sim.py`, `eval_g1_dataset.py`, `replay_robot.py`) are Unitree's, unchanged.
+> Tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim) with a 15-joint ACT policy, and in a dry run on the real G1 (`--motion=true --dry_run=true`, teleimager 2.0.8). **A live run on the real robot has not been done yet**; neither has a run with hands or with a policy without the waist. The other scripts (`eval_g1_sim.py`, `eval_g1_dataset.py`, `replay_robot.py`) are Unitree's, unchanged.
 
 | Unitree Robotics repositories                      | link                                                                               |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -341,6 +349,7 @@ To test your trained model on a real robot, you can use the eval_g1.py script lo
 # --image_host: Address of the image server, default 192.168.123.164.
 # --threads: PyTorch CPU threads, for a PC without a GPU (e.g. 4); default 0 = unchanged.
 # --sim: true to talk to a simulator (DDS domain 1) instead of the robot.
+# --dry_run: true to read the joints and cameras and run the policy without sending anything to the robot.
 # --motion: Unitree's flag, true when the robot stands in its walking mode (Unitree's controller balances the
 #           legs). The arms, and the waist with --waist=true, are then sent on rt/arm_sdk.
 

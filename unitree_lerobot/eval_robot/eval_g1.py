@@ -4,6 +4,7 @@ Refer to:   lerobot/lerobot/scripts/eval.py
             lerobot/robot_devices/control_utils.py
 """
 
+import signal
 import time
 import cv2
 import torch
@@ -32,20 +33,23 @@ from lerobot.processor import (
     PolicyProcessorPipeline,
 )
 from unitree_lerobot.eval_robot.make_robot import (
+    ARM_CONFIG,
     setup_image_client,
     setup_robot_interface,
     process_images_and_observations,
 )
 from unitree_lerobot.eval_robot.utils.utils import (
     AsyncChunks,
+    format_start_pose,
     limit_command,
     predict_action,
     predict_chunk,
+    ramp_to,
+    release_arms,
     to_list,
     to_scalar,
     EvalRealConfig,
 )
-from unitree_lerobot.eval_robot.utils.rerun_visualizer import RerunLogger, visualization_data
 
 import logging_mp
 
@@ -65,6 +69,10 @@ def eval_policy(
     logger_mp.info(f"Arguments: {cfg}")
 
     if cfg.visualization:
+        # imported here: rerun is only needed for --visualization (and isn't installed on robots
+        # whose env keeps numpy 1.x, since rerun-sdk >= 0.24 needs numpy 2)
+        from unitree_lerobot.eval_robot.utils.rerun_visualizer import RerunLogger, visualization_data
+
         rerun_logger = RerunLogger()
 
     # Reset policy and processor if they are provided
@@ -73,7 +81,15 @@ def eval_policy(
         preprocessor.reset()
         postprocessor.reset()
 
+    # SIGTERM / SIGHUP (e.g. the SSH connection dropping) stop the run like Ctrl-C, so the arms get released
+    def stop_like_ctrl_c(signum, frame):
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop_like_ctrl_c)
+
     image_client = None
+    arm_ctrl = arm_ik = actor = None
     try:
         # --- Setup Phase ---
         if cfg.ee.lower() in ("", "none"):  # arms only (e.g. the G1 with rubber hands)
@@ -85,9 +101,6 @@ def eval_policy(
         arm_ctrl, arm_ik, ee_shared_mem, arm_dof, ee_dof = (
             robot_interface[key] for key in ["arm_ctrl", "arm_ik", "ee_shared_mem", "arm_dof", "ee_dof"]
         )
-        # The controller starts by streaming an all-zero arm target. Hold the measured pose instead, so the
-        # arms stay where they are until the start is confirmed below.
-        arm_ctrl.ctrl_dual_arm(arm_ctrl.get_current_dual_arm_q(), np.zeros(arm_dof))
 
         # --waist=true: the policy has the waist yaw as the LAST value of its state and action.
         state_dim = int(policy.config.input_features["observation.state"].shape[0])
@@ -103,7 +116,9 @@ def eval_policy(
                 f"policy state has {state_dim} values, but arm={cfg.arm} ee='{cfg.ee or 'none'}' "
                 f"waist={has_waist} gives {base_dim + int(has_waist)}{hint}"
             )
-        drive_waist = has_waist  # debug mode: on rt/lowcmd; motion mode: on rt/arm_sdk, next to the arms
+        # the waist is commanded in both modes: debug mode on rt/lowcmd, motion mode on rt/arm_sdk next to the arms
+        commands_waist = has_waist
+        start_waist_q = arm_ctrl.get_current_waist_yaw_q() if has_waist else 0.0  # release returns the waist here
         if has_waist and cfg.motion:
             logger_mp.info("motion mode: the waist is driven through rt/arm_sdk while Unitree's controller balances the legs")
         logger_mp.info(
@@ -147,40 +162,42 @@ def eval_policy(
         from_idx = dataset.meta.episodes["dataset_from_index"][0]
         step = dataset[from_idx]
         init_arm_pose = step["observation.state"][:arm_dof].cpu().numpy()
+        init_waist = float(step["observation.state"][-1]) if has_waist else 0.0
+        # the joints this script commands
+        arm_names = [m.name for m in ARM_CONFIG[cfg.arm]["arm_index"]]
+        target_names = arm_names + (["kWaistYaw"] if has_waist else [])
+        n_cmd = arm_dof + int(commands_waist)
+        start = np.concatenate((init_arm_pose, [init_waist] if commands_waist else []))
 
-        user_input = input("Enter 's' to initialize the robot and start the evaluation: ")
+        def read_measured():
+            q = arm_ctrl.get_current_dual_arm_q()
+            return np.concatenate((q, [arm_ctrl.get_current_waist_yaw_q()] if commands_waist else []))
+
+        logger_mp.info(format_start_pose(target_names[:n_cmd], start, read_measured()))
+        if cfg.dry_run:
+            logger_mp.warning("DRY RUN: the policy runs on live joints and cameras; nothing is sent to the robot.")
+            prompt = "Enter 's' to start the dry run: "
+        else:
+            prompt = "Enter 's' to move the robot to the start pose and start the evaluation: "
+        user_input = input(prompt)
         idx = 0
         print(f"user_input: {user_input}")
         full_state = None
         prev_cmd = None
+        report = {"t": time.perf_counter(), "max_dev": 0.0, "dev_joint": 0, "max_track": 0.0, "track_joint": 0}
         if user_input.lower() == "s":
             # "The initial positions of the robot's arm and fingers take the initial positions during data recording."
-            logger_mp.info("Initializing robot to starting pose...")
-            if cfg.max_vel > 0:
-                # Go to the start pose under the same limits as the policy: at most max_vel rad/s per joint,
-                # never more than max_lead rad ahead of the measured joints.
-                def measure():
-                    waist_q = [arm_ctrl.get_current_waist_yaw_q()] if has_waist else []
-                    return np.concatenate((arm_ctrl.get_current_dual_arm_q(), waist_q))
+            if cfg.dry_run:
+                logger_mp.info("dry run: not moving to the start pose")
+            else:
+                def send(q):
+                    arm_ctrl.ctrl_dual_arm(q[:arm_dof], arm_ik.solve_tau(q[:arm_dof]))
+                    if commands_waist:
+                        arm_ctrl.ctrl_waist_yaw(float(q[arm_dof]))
 
-                init_waist = [float(step["observation.state"][-1])] if has_waist else []
-                init_target = np.concatenate((init_arm_pose.astype(float), init_waist))
-                prev_cmd = measure()
-                distance = float(np.max(np.abs(init_target - prev_cmd)))
-                logger_mp.info(f"Start move: {distance:.2f} rad at up to {cfg.max_vel} rad/s")
-                deadline = time.perf_counter() + 3.0 * distance / cfg.max_vel + 3.0
-                while np.max(np.abs(init_target - prev_cmd)) > 1e-3 and time.perf_counter() < deadline:
-                    tick_start = time.perf_counter()
-                    prev_cmd = limit_command(init_target, prev_cmd, measure(), cfg.max_vel, cfg.max_lead, cfg.frequency)
-                    arm_ctrl.ctrl_dual_arm(prev_cmd[:arm_dof], arm_ik.solve_tau(prev_cmd[:arm_dof]))
-                    if drive_waist:
-                        arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
-                    time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - tick_start)))
-                time.sleep(0.5)  # let the arms settle
-            else:  # limits off: Unitree's original jump to the start pose
-                tau = robot_interface["arm_ik"].solve_tau(init_arm_pose)
-                robot_interface["arm_ctrl"].ctrl_dual_arm(init_arm_pose, tau)
-                time.sleep(1.0)  # Give time for the robot to move
+                ramp_vel = cfg.max_vel if cfg.max_vel > 0 else 0.5
+                logger_mp.info(f"Moving to the start pose at {ramp_vel} rad/s...")
+                prev_cmd = ramp_to(start, read_measured, send, ramp_vel, cfg.frequency)  # the policy continues from here
             # --- Run Main Loop ---
             logger_mp.info(f"Starting evaluation loop at {cfg.frequency} Hz.")
             while True:
@@ -236,13 +253,31 @@ def eval_policy(
                 if prev_cmd is None:
                     prev_cmd = measured.copy()
                 prev_cmd = limit_command(target, prev_cmd, measured, cfg.max_vel, cfg.max_lead, cfg.frequency)
-                arm_action = prev_cmd[:arm_dof]
-                tau = arm_ik.solve_tau(arm_action)
-                arm_ctrl.ctrl_dual_arm(arm_action, tau)
-                if drive_waist:
-                    arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
+                # Once a second: how far the policy wants to move from the measured joints and, in a live run,
+                # how far the measured joints are from the command that was sent. A tracking error that stays
+                # large means the robot is not following the commands.
+                dev = np.abs(target[:n_cmd] - measured[:n_cmd])
+                track = np.abs(prev_cmd[:n_cmd] - measured[:n_cmd])
+                if dev.max() > report["max_dev"]:
+                    report["max_dev"], report["dev_joint"] = float(dev.max()), int(dev.argmax())
+                if track.max() > report["max_track"]:
+                    report["max_track"], report["track_joint"] = float(track.max()), int(track.argmax())
+                if time.perf_counter() - report["t"] >= 1.0:
+                    text = (f"{'dry run ' if cfg.dry_run else ''}step {idx}: max |policy - joints| "
+                            f"{report['max_dev']:.3f} rad ({target_names[report['dev_joint']]})")
+                    if not cfg.dry_run:
+                        text += (f"; max |command - joints| {report['max_track']:.3f} rad "
+                                 f"({target_names[report['track_joint']]})")
+                    logger_mp.info(text + " in the last second")
+                    report.update(t=time.perf_counter(), max_dev=0.0, dev_joint=0, max_track=0.0, track_joint=0)
+                if not cfg.dry_run:
+                    arm_action = prev_cmd[:arm_dof]
+                    tau = arm_ik.solve_tau(arm_action)
+                    arm_ctrl.ctrl_dual_arm(arm_action, tau)
+                    if commands_waist:
+                        arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
 
-                if cfg.ee:
+                if cfg.ee and not cfg.dry_run:
                     ee_action_start_idx = arm_dof
                     left_ee_action = action_np[ee_action_start_idx : ee_action_start_idx + ee_dof]
                     right_ee_action = action_np[ee_action_start_idx + ee_dof : ee_action_start_idx + 2 * ee_dof]
@@ -260,9 +295,29 @@ def eval_policy(
                 idx += 1
                 # Maintain frequency
                 time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - loop_start_time)))
+    except KeyboardInterrupt:
+        logger_mp.info("Stopped (Ctrl-C or SIGTERM/SIGHUP).")
     except Exception as e:
         logger_mp.error(f"An error occurred: {e}\n{traceback.format_exc()}")
     finally:
+        if actor is not None:
+            actor.close()  # wait for the planning thread; killing it inside torch aborts the process
+        # Live run in motion mode: the arms are under rt/arm_sdk from the moment the controller is created
+        # (also if 's' was never typed), so hand them back: return to where they started, then the weight 1 -> 0.
+        if arm_ctrl is not None and cfg.motion and not cfg.dry_run and hasattr(arm_ctrl, "set_arm_sdk_weight"):
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                signal.signal(sig, signal.SIG_IGN)  # a second Ctrl-C must not cut the release short
+            logger_mp.warning("Releasing the arms: back to where they started, then the walking controller "
+                              "takes them over. Ctrl-C is ignored meanwhile (use the e-stop).")
+            try:
+                if commands_waist:  # the waist is on rt/arm_sdk too: bring it back to where it started first
+                    ramp_to([start_waist_q], lambda: [arm_ctrl.get_current_waist_yaw_q()],
+                            lambda q: arm_ctrl.ctrl_waist_yaw(float(q[0])),
+                            cfg.max_vel if cfg.max_vel > 0 else 0.5, cfg.frequency, timeout=10.0)
+                release_arms(arm_ctrl, arm_ik, cfg.max_vel, cfg.frequency)
+                logger_mp.info("Arms released.")
+            except Exception as e:
+                logger_mp.error(f"Releasing the arms FAILED: {e}\n{traceback.format_exc()}")
         if image_client is not None:
             image_client.close()
 

@@ -671,6 +671,14 @@ class ZMQ_Requester:
             logger_mp.warning(f"Error closing Requester socket: {e}")
 
 
+def cameras_of(cam_config):
+    """The per-camera part of a teleimager config: teleimager 2.x nests the cameras under "camera"
+    (next to e.g. "webrtc"), 1.x has head_camera / left_wrist_camera / ... at the top level."""
+    if isinstance(cam_config, dict) and isinstance(cam_config.get("camera"), dict):
+        return cam_config["camera"]
+    return cam_config
+
+
 # ========================================================
 # image client
 # ========================================================
@@ -689,7 +697,7 @@ class ImageClient:
         # subscriber and requester setup
         self._subscriber_manager = ZMQ_SubscriberManager.get_instance()
         self._requester  = ZMQ_Requester(self._host, self._request_port)
-        self._cam_config = self._requester.request()
+        self._cam_config = cameras_of(self._requester.request())
 
         if self._cam_config is None:
             raise RuntimeError("Failed to get camera configuration.")
