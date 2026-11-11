@@ -159,7 +159,7 @@ def eval_policy(
         print(f"user_input: {user_input}")
         full_state = None
         prev_cmd = None
-        dry_report = {"t": time.perf_counter(), "max_dev": 0.0, "joint": -1}
+        report = {"t": time.perf_counter(), "max_dev": 0.0, "dev_joint": 0, "max_track": 0.0, "track_joint": 0}
         if user_input.lower() == "s":
             # "The initial positions of the robot's arm and fingers take the initial positions during data recording."
             if cfg.dry_run:
@@ -218,18 +218,24 @@ def eval_policy(
                 if prev_cmd is None:
                     prev_cmd = measured.copy()
                 prev_cmd = limit_command(target, prev_cmd, measured, cfg.max_vel, cfg.max_lead, cfg.frequency)
-                if cfg.dry_run:
-                    # report, once a second, how far the policy wants to move from the measured joints
-                    dev = np.abs(target[:n_cmd] - measured[:n_cmd])
-                    if dev.max() > dry_report["max_dev"]:
-                        dry_report["max_dev"], dry_report["joint"] = float(dev.max()), int(dev.argmax())
-                    if time.perf_counter() - dry_report["t"] >= 1.0:
-                        logger_mp.info(
-                            f"dry run step {idx}: max |policy - joints| {dry_report['max_dev']:.3f} rad "
-                            f"({target_names[dry_report['joint']]}) in the last second"
-                        )
-                        dry_report.update(t=time.perf_counter(), max_dev=0.0, joint=-1)
-                else:
+                # Once a second: how far the policy wants to move from the measured joints and, in a live run,
+                # how far the measured joints are from the command that was sent. A tracking error that stays
+                # large means the robot is not following the commands.
+                dev = np.abs(target[:n_cmd] - measured[:n_cmd])
+                track = np.abs(prev_cmd[:n_cmd] - measured[:n_cmd])
+                if dev.max() > report["max_dev"]:
+                    report["max_dev"], report["dev_joint"] = float(dev.max()), int(dev.argmax())
+                if track.max() > report["max_track"]:
+                    report["max_track"], report["track_joint"] = float(track.max()), int(track.argmax())
+                if time.perf_counter() - report["t"] >= 1.0:
+                    text = (f"{'dry run ' if cfg.dry_run else ''}step {idx}: max |policy - joints| "
+                            f"{report['max_dev']:.3f} rad ({target_names[report['dev_joint']]})")
+                    if not cfg.dry_run:
+                        text += (f"; max |command - joints| {report['max_track']:.3f} rad "
+                                 f"({target_names[report['track_joint']]})")
+                    logger_mp.info(text + " in the last second")
+                    report.update(t=time.perf_counter(), max_dev=0.0, dev_joint=0, max_track=0.0, track_joint=0)
+                if not cfg.dry_run:
                     arm_action = prev_cmd[:arm_dof]
                     tau = arm_ik.solve_tau(arm_action)
                     arm_ctrl.ctrl_dual_arm(arm_action, tau)

@@ -205,10 +205,14 @@ def ramp_to(target, read_measured, send, max_vel: float, frequency: float, toler
     target = np.asarray(target, dtype=float)
     cmd = np.asarray(read_measured(), dtype=float)
     step = max_vel / frequency
-    for _ in range(max(1, int(timeout * frequency))):
+    for tick in range(max(1, int(timeout * frequency))):
         cmd = cmd + np.clip(target - cmd, -step, step)
         send(cmd)
         sleep(1.0 / frequency)
+        if tick % int(2 * frequency) == int(2 * frequency) - 1:  # every 2 s: is the robot following?
+            gap = float(np.max(np.abs(np.asarray(read_measured()) - target)))
+            logger_mp.info(f"ramp_to: command {float(np.max(np.abs(cmd - target))):.2f} rad from the target, "
+                           f"joints {gap:.2f} rad from it")
         if np.max(np.abs(cmd - target)) < 1e-9 and np.max(np.abs(np.asarray(read_measured()) - target)) < tolerance:
             return cmd
     worst = float(np.max(np.abs(np.asarray(read_measured()) - target)))
@@ -217,7 +221,7 @@ def ramp_to(target, read_measured, send, max_vel: float, frequency: float, toler
 
 
 def release_arms(arm_ctrl, arm_ik, max_vel: float, frequency: float, release_seconds: float = 2.0,
-                 sleep=time.sleep):
+                 timeout: float = 10.0, sleep=time.sleep):
     """End of a live run in motion mode (rt/arm_sdk): move the arm command back, at most max_vel rad/s
     (0.5 if 0), to the pose the arms had when the controller started, then hand the arms back to the walking
     controller by lowering the arm_sdk weight from 1 to 0 over release_seconds."""
@@ -226,7 +230,7 @@ def release_arms(arm_ctrl, arm_ik, max_vel: float, frequency: float, release_sec
         arm_ctrl.ctrl_dual_arm(q, arm_ik.solve_tau(q))
 
     ramp_to(arm_ctrl.initial_arm_q, arm_ctrl.get_current_dual_arm_q, send, max_vel if max_vel > 0 else 0.5,
-            frequency, sleep=sleep)
+            frequency, timeout=timeout, sleep=sleep)
     steps = max(1, int(release_seconds * frequency))
     for k in range(1, steps + 1):
         arm_ctrl.set_arm_sdk_weight(1.0 - k / steps)
