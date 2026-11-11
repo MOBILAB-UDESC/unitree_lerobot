@@ -128,6 +128,8 @@ class AsyncChunks:
         self.plan = plan
         self.lock = threading.Lock()
         self.generation = 0
+        self.closed = False
+        self.worker = None
         self.reset()
 
     def reset(self):
@@ -157,16 +159,30 @@ class AsyncChunks:
                 (chunk, tick), self.ready = self.ready, None
                 if self.tick - tick < len(chunk):
                     self.current, self.i = chunk, self.tick - tick
-            start = not self.busy
+            start = not self.busy and not self.closed
             if start:
                 self.busy = True
                 args = (dict(observation), self.tick, self.generation)
         if start:
-            threading.Thread(target=self._work, args=args, daemon=True).start()
+            self.worker = threading.Thread(target=self._work, args=args, daemon=True)
+            self.worker.start()
         action = self.current[min(self.i, len(self.current) - 1)]
         self.i += 1
         self.tick += 1
         return action
+
+
+    def close(self, timeout: float = 15.0):
+        """Stop planning and wait for the planning thread. Without this, a Ctrl-C usually finds that thread
+        in the middle of a torch op, and the process aborts when Python exits it there ("terminate called
+        without an active exception", exit code 134)."""
+        with self.lock:
+            self.closed = True
+            worker = self.worker
+        if worker is not None:
+            worker.join(timeout)
+            if worker.is_alive():
+                logger_mp.warning(f"[AsyncChunks] the planning thread is still running after {timeout:.0f} s")
 
 
 def limit_command(target, prev, measured, max_vel: float, max_lead: float, frequency: float):
@@ -198,6 +214,31 @@ def ramp_to(target, read_measured, send, max_vel: float, frequency: float, toler
     worst = float(np.max(np.abs(np.asarray(read_measured()) - target)))
     logger_mp.warning(f"ramp_to: not at the start pose after {timeout:.0f} s ({worst:.2f} rad away); continuing")
     return cmd
+
+
+def release_arms(arm_ctrl, arm_ik, max_vel: float, frequency: float, release_seconds: float = 2.0,
+                 sleep=time.sleep):
+    """End of a live run in motion mode (rt/arm_sdk): move the arm command back, at most max_vel rad/s
+    (0.5 if 0), to the pose the arms had when the controller started, then hand the arms back to the walking
+    controller by lowering the arm_sdk weight from 1 to 0 over release_seconds."""
+
+    def send(q):
+        arm_ctrl.ctrl_dual_arm(q, arm_ik.solve_tau(q))
+
+    ramp_to(arm_ctrl.initial_arm_q, arm_ctrl.get_current_dual_arm_q, send, max_vel if max_vel > 0 else 0.5,
+            frequency, sleep=sleep)
+    steps = max(1, int(release_seconds * frequency))
+    for k in range(1, steps + 1):
+        arm_ctrl.set_arm_sdk_weight(1.0 - k / steps)
+        sleep(1.0 / frequency)
+
+
+def format_start_pose(names, start, measured) -> str:
+    """One line per joint: where the dataset's first frame has it, where the robot has it now, how far it must move."""
+    lines = ["Start pose (the dataset's first frame) against the robot now, rad:"]
+    for name, goal, now in zip(names, start, measured):
+        lines.append(f"  {name:<22} start {goal:+.2f}   now {now:+.2f}   move {goal - now:+.2f}")
+    return "\n".join(lines)
 
 
 def reset_policy(policy: PreTrainedPolicy):

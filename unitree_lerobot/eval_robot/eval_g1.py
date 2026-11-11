@@ -4,6 +4,7 @@ Refer to:   lerobot/lerobot/scripts/eval.py
             lerobot/robot_devices/control_utils.py
 """
 
+import signal
 import time
 import torch
 import logging
@@ -31,16 +32,19 @@ from lerobot.processor import (
     PolicyProcessorPipeline,
 )
 from unitree_lerobot.eval_robot.make_robot import (
+    ARM_CONFIG,
     setup_image_client,
     setup_robot_interface,
     process_images_and_observations,
 )
 from unitree_lerobot.eval_robot.utils.utils import (
     AsyncChunks,
+    format_start_pose,
     limit_command,
     predict_action,
     predict_chunk,
     ramp_to,
+    release_arms,
     to_list,
     to_scalar,
     EvalRealConfig,
@@ -76,7 +80,15 @@ def eval_policy(
         preprocessor.reset()
         postprocessor.reset()
 
+    # SIGTERM / SIGHUP (e.g. the SSH connection dropping) stop the run like Ctrl-C, so the arms get released
+    def stop_like_ctrl_c(signum, frame):
+        raise KeyboardInterrupt
+
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, stop_like_ctrl_c)
+
     image_client = None
+    arm_ctrl = arm_ik = actor = None
     try:
         # --- Setup Phase ---
         if cfg.ee.lower() in ("", "none"):  # arms only (e.g. the G1 with rubber hands)
@@ -126,7 +138,17 @@ def eval_policy(
         init_arm_pose = step["observation.state"][:arm_dof].cpu().numpy()
         init_waist = float(step["observation.state"][-1]) if has_waist else 0.0
         commands_waist = has_waist and not cfg.motion
+        # the joints this script commands (in motion mode the policy's waist action is ignored)
+        arm_names = [m.name for m in ARM_CONFIG[cfg.arm]["arm_index"]]
+        target_names = arm_names + (["kWaistYaw"] if has_waist else [])
+        n_cmd = arm_dof + int(commands_waist)
+        start = np.concatenate((init_arm_pose, [init_waist] if commands_waist else []))
 
+        def read_measured():
+            q = arm_ctrl.get_current_dual_arm_q()
+            return np.concatenate((q, [arm_ctrl.get_current_waist_yaw_q()] if commands_waist else []))
+
+        logger_mp.info(format_start_pose(target_names[:n_cmd], start, read_measured()))
         if cfg.dry_run:
             logger_mp.warning("DRY RUN: the policy runs on live joints and cameras; nothing is sent to the robot.")
             prompt = "Enter 's' to start the dry run: "
@@ -140,15 +162,8 @@ def eval_policy(
         dry_report = {"t": time.perf_counter(), "max_dev": 0.0, "joint": -1}
         if user_input.lower() == "s":
             # "The initial positions of the robot's arm and fingers take the initial positions during data recording."
-            start = np.concatenate((init_arm_pose, [init_waist] if commands_waist else []))
-
-            def read_measured():
-                q = arm_ctrl.get_current_dual_arm_q()
-                return np.concatenate((q, [arm_ctrl.get_current_waist_yaw_q()] if commands_waist else []))
-
             if cfg.dry_run:
-                away = np.abs(start - read_measured())
-                logger_mp.info(f"dry run: the start pose is {away.max():.2f} rad away (joint {int(away.argmax())}); not moving")
+                logger_mp.info("dry run: not moving to the start pose")
             else:
                 def send(q):
                     arm_ctrl.ctrl_dual_arm(q[:arm_dof], arm_ik.solve_tau(q[:arm_dof]))
@@ -205,13 +220,13 @@ def eval_policy(
                 prev_cmd = limit_command(target, prev_cmd, measured, cfg.max_vel, cfg.max_lead, cfg.frequency)
                 if cfg.dry_run:
                     # report, once a second, how far the policy wants to move from the measured joints
-                    dev = np.abs(target - measured)
+                    dev = np.abs(target[:n_cmd] - measured[:n_cmd])
                     if dev.max() > dry_report["max_dev"]:
                         dry_report["max_dev"], dry_report["joint"] = float(dev.max()), int(dev.argmax())
                     if time.perf_counter() - dry_report["t"] >= 1.0:
                         logger_mp.info(
                             f"dry run step {idx}: max |policy - joints| {dry_report['max_dev']:.3f} rad "
-                            f"(joint {dry_report['joint']}) in the last second"
+                            f"({target_names[dry_report['joint']]}) in the last second"
                         )
                         dry_report.update(t=time.perf_counter(), max_dev=0.0, joint=-1)
                 else:
@@ -239,9 +254,25 @@ def eval_policy(
                 idx += 1
                 # Maintain frequency
                 time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - loop_start_time)))
+    except KeyboardInterrupt:
+        logger_mp.info("Stopped (Ctrl-C or SIGTERM/SIGHUP).")
     except Exception as e:
         logger_mp.error(f"An error occurred: {e}\n{traceback.format_exc()}")
     finally:
+        if actor is not None:
+            actor.close()  # wait for the planning thread; killing it inside torch aborts the process
+        # Live run in motion mode: the arms are under rt/arm_sdk from the moment the controller is created
+        # (also if 's' was never typed), so hand them back: return to where they started, then the weight 1 -> 0.
+        if arm_ctrl is not None and cfg.motion and not cfg.dry_run and hasattr(arm_ctrl, "set_arm_sdk_weight"):
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                signal.signal(sig, signal.SIG_IGN)  # a second Ctrl-C must not cut the release short
+            logger_mp.warning("Releasing the arms: back to where they started, then the walking controller "
+                              "takes them over. Ctrl-C is ignored meanwhile (use the e-stop).")
+            try:
+                release_arms(arm_ctrl, arm_ik, cfg.max_vel, cfg.frequency)
+                logger_mp.info("Arms released.")
+            except Exception as e:
+                logger_mp.error(f"Releasing the arms FAILED: {e}\n{traceback.format_exc()}")
         if image_client is not None:
             image_client.close()
 

@@ -21,6 +21,8 @@
 > | The arms hold their current pose when the controller starts (they used to move to the zero pose at up to 20 rad/s while waiting for `s`) | |
 > | The move to the dataset's start pose is speed-limited (it used to be a jump) | `--max_vel` (0.5 rad/s if 0) |
 > | Dry run: live joints and cameras, policy runs, nothing is sent to the robot; logs how far the policy wants to move | `--dry_run=true` |
+> | Stopping a live run (Ctrl-C, an error, SIGTERM/SIGHUP such as a dropped SSH connection, or never typing `s`) hands the arms back: the command returns to the pose the arms had at startup (at `--max_vel`), then the `rt/arm_sdk` weight goes 1 → 0 over 2 s. The planning thread of `--replan=async` is now stopped cleanly; a Ctrl-C used to abort the process (exit code 134) | |
+> | Start pose against the robot's current pose, per joint and by name, is printed before the `s` prompt | |
 > | rerun is only imported with `--visualization=true`, so it needn't be installed (rerun-sdk >= 0.24 needs numpy 2, which the robot's pinocchio build doesn't support) | |
 >
 > Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`, `image_server/image_client.py`; robot-free tests in `test/test_eval_safety.py`. The first four fixes were tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim); the others haven't run in the simulator yet (their helpers are covered by those tests). None has run on the real robot yet.

@@ -147,6 +147,7 @@ class G1_29_ArmController:
         # Hold the current arm pose until the first command (the target started at zeros, which moved the
         # arms to the zero pose at up to 20 rad/s as soon as the controller was created).
         self.q_target = self.get_current_dual_arm_q()
+        self.initial_arm_q = self.q_target.copy()  # release_arms() returns here before handing the arms back
         # initialize publish thread
         self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
         self.ctrl_lock = threading.Lock()
@@ -217,6 +218,11 @@ class G1_29_ArmController:
     def ctrl_waist_yaw(self, q_target):
         """Set the waist yaw target (rad). Until this is called the waist stays locked at its start pose."""
         self.msg.motor_cmd[G1_29_JointIndex.kWaistYaw].q = float(np.clip(q_target, -1.0, 1.0))
+
+    def set_arm_sdk_weight(self, weight):
+        """Motion mode: how much of the arms (and waist) rt/arm_sdk drives. 1 = all of it, 0 = the walking
+        controller has them back. The publish thread sends it with every command."""
+        self.msg.motor_cmd[G1_29_JointIndex.kNotUsedJoint0].q = float(np.clip(weight, 0.0, 1.0))
 
     def get_current_waist_yaw_q(self):
         """Return current state q of the waist yaw motor."""
