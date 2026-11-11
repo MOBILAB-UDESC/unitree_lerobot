@@ -17,6 +17,18 @@
 > | Safety limits on the arm and waist commands | `--max_vel` (1.0 rad/s), `--max_lead` (0.25 rad), `0` = off |
 > | The control loop no longer pauses while the network computes a new action chunk | `--replan=async` (default); `--replan=chunk` is the original behaviour |
 > | Works with the current image client; arms-only robots; one-lens head camera | `--image_host`, `--ee=none` |
+> | More CPU threads for the network when there is no GPU | `--threads=4` (default `0` = PyTorch's own setting) |
+>
+> Example: a 15-joint policy (14 arm joints + waist yaw, no hands) on a PC without a GPU:
+>
+> ```bash
+> python unitree_lerobot/eval_robot/eval_g1.py \
+>     --policy.path=/path/to/pretrained_model --policy.device=cpu \
+>     --repo_id=mobilab-udesc/g1_box_into_box_sim_scripted \
+>     --arm=G1_29 --ee=none --waist=true --threads=4 --frequency=30
+> ```
+>
+> Leave out `--waist=true` for a policy without the waist joint, and `--policy.device=cpu --threads=4` on a PC with a GPU. Raise the limits with, for example, `--max_vel=2.5 --max_lead=0.9`.
 >
 > Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`. Tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim), not yet on the real robot.
 
