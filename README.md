@@ -9,14 +9,16 @@
   </p>
 </div>
 
-> **MOBILAB-UDESC fork, branch `mobilab`.** This is Unitree's `unitree_lerobot` with two additions; everything else is unchanged.
+> **MOBILAB-UDESC fork, branch `mobilab`.** This is Unitree's `unitree_lerobot` with fixes to `eval_g1.py`; everything else is unchanged, and all file and script names are Unitree's.
 >
-> | Addition | Where |
+> | Fix | Flag |
 > | --- | --- |
-> | G1 in MuJoCo for unmodified `xr_teleoperate`: wrist cameras, real2sim lab scene, LeRobot v3.0 recording, ACT training and rollouts | [`g1_mujoco_real2sim/`](g1_mujoco_real2sim/README.md) (self-contained, has its own README and install scripts) |
-> | Fixes to `eval_g1.py`: `--waist=true` for policies with the waist yaw joint, `--max_vel` / `--max_lead` safety limits, `--replan=async` (no pause for inference), current image client, `--ee=none` | `unitree_lerobot/eval_robot/` (`eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`) |
+> | Policies that also have the waist yaw joint (arms + hands + waist, waist last) | `--waist=true` (default: off, as in Unitree's script) |
+> | Safety limits on the arm and waist commands | `--max_vel` (1.0 rad/s), `--max_lead` (0.25 rad), `0` = off |
+> | The control loop no longer pauses while the network computes a new action chunk | `--replan=async` (default); `--replan=chunk` is the original behaviour |
+> | Works with the current image client; arms-only robots; one-lens head camera | `--image_host`, `--ee=none` |
 >
-> The fixes were tested against the MuJoCo simulator in `g1_mujoco_real2sim/`, not yet on the real robot.
+> Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`. Tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim), not yet on the real robot.
 
 | Unitree Robotics repositories                      | link                                                                               |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------- |
