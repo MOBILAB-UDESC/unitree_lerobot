@@ -1,4 +1,5 @@
 import threading
+import time
 import numpy as np
 import torch
 from typing import Any
@@ -180,6 +181,25 @@ def limit_command(target, prev, measured, max_vel: float, max_lead: float, frequ
     return target
 
 
+def ramp_to(target, read_measured, send, max_vel: float, frequency: float, tolerance: float = 0.05,
+            timeout: float = 20.0, sleep=time.sleep):
+    """Move a joint command from the measured pose to `target`, changing it by at most max_vel rad/s,
+    one send(command) per tick. Returns the last command once the command is at the target and the
+    measured joints are within `tolerance` rad of it, or after `timeout` seconds (with a warning)."""
+    target = np.asarray(target, dtype=float)
+    cmd = np.asarray(read_measured(), dtype=float)
+    step = max_vel / frequency
+    for _ in range(max(1, int(timeout * frequency))):
+        cmd = cmd + np.clip(target - cmd, -step, step)
+        send(cmd)
+        sleep(1.0 / frequency)
+        if np.max(np.abs(cmd - target)) < 1e-9 and np.max(np.abs(np.asarray(read_measured()) - target)) < tolerance:
+            return cmd
+    worst = float(np.max(np.abs(np.asarray(read_measured()) - target)))
+    logger_mp.warning(f"ramp_to: not at the start pose after {timeout:.0f} s ({worst:.2f} rad away); continuing")
+    return cmd
+
+
 def reset_policy(policy: PreTrainedPolicy):
     policy.reset()
 
@@ -249,6 +269,9 @@ class EvalRealConfig:
     # max_lead [rad]   how far a joint command may be ahead of the measured joint
     max_vel: float = 1.0
     max_lead: float = 0.25
+    # read the joints and cameras and run the policy, but send nothing to the robot (no arm, hand or
+    # mobile controller is created); logs how far the policy's actions are from the measured joints
+    dry_run: bool = False
 
     rename_map: dict[str, str] = field(default_factory=dict)
 

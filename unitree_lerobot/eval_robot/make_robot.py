@@ -9,6 +9,9 @@ from unitree_lerobot.eval_robot.image_server.image_client import ImageClient
 from unitree_lerobot.eval_robot.robot_control.robot_arm import (
     G1_29_ArmController,
     G1_23_ArmController,
+    G1_ArmStateReader,
+    G1_29_JointArmIndex,
+    G1_23_JointArmIndex,
 )
 from unitree_lerobot.eval_robot.robot_control.robot_arm_ik import G1_29_ArmIK, G1_23_ArmIK
 from unitree_lerobot.eval_robot.robot_control.robot_hand_unitree import (
@@ -33,8 +36,8 @@ logger_mp.setLevel(logging_mp.INFO)
 
 # Configuration for robot arms
 ARM_CONFIG = {
-    "G1_29": {"controller": G1_29_ArmController, "ik_solver": G1_29_ArmIK, "dof": 14},
-    "G1_23": {"controller": G1_23_ArmController, "ik_solver": G1_23_ArmIK, "dof": 14},
+    "G1_29": {"controller": G1_29_ArmController, "ik_solver": G1_29_ArmIK, "dof": 14, "arm_index": G1_29_JointArmIndex},
+    "G1_23": {"controller": G1_23_ArmController, "ik_solver": G1_23_ArmIK, "dof": 14, "arm_index": G1_23_JointArmIndex},
     # Add other arms here
 }
 
@@ -89,6 +92,8 @@ def setup_robot_interface(args: argparse.Namespace) -> dict[str, Any]:
     """
     # ---------- Arm ----------
     arm_spec = ARM_CONFIG[args.arm]
+    if getattr(args, "dry_run", False):
+        return setup_dry_run_interface(args, arm_spec)
     arm_ik = arm_spec["ik_solver"]()
     is_sim = getattr(args, "sim", False)
     arm_ctrl = arm_spec["controller"](motion_mode=args.motion, simulation_mode=is_sim)
@@ -172,6 +177,35 @@ def setup_robot_interface(args: argparse.Namespace) -> dict[str, Any]:
         "ee_dof": ee_dof,
         "mobile_ctrl": mobile_ctrl,
         "mobile_action_dim": mobile_action_dim,
+    }
+
+
+def setup_dry_run_interface(args: argparse.Namespace, arm_spec: dict[str, Any]) -> dict[str, Any]:
+    """--dry_run: read the joints only. No arm, hand or mobile controller is created, so nothing is
+    published to the robot. Hand state reads as zeros (their controllers would also command them)."""
+    arm_ctrl = G1_ArmStateReader(arm_spec["arm_index"], simulation_mode=getattr(args, "sim", False))
+    ee_shared_mem, ee_dof = {}, 0
+    if ee_key := getattr(args, "ee", "").lower():
+        spec = EE_CONFIG[ee_key]
+        ee_dof = spec["dof"]
+        n = _resolve_out_len(spec)
+        logger_mp.warning(f"dry run: the {ee_key} hands are not started; their state reads as zeros")
+        ee_shared_mem = {
+            "left": Array("d", ee_dof, lock=True),
+            "right": Array("d", ee_dof, lock=True),
+            "state": Array("d", n, lock=False),
+            "action": Array("d", n, lock=False),
+            "lock": Lock(),
+        }
+    return {
+        "arm_ctrl": arm_ctrl,
+        "arm_ik": None,
+        "ee_ctrl": None,
+        "ee_shared_mem": ee_shared_mem,
+        "arm_dof": int(arm_spec["dof"]),
+        "ee_dof": ee_dof,
+        "mobile_ctrl": None,
+        "mobile_action_dim": 0,
     }
 
 

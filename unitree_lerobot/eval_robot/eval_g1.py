@@ -40,6 +40,7 @@ from unitree_lerobot.eval_robot.utils.utils import (
     limit_command,
     predict_action,
     predict_chunk,
+    ramp_to,
     to_list,
     to_scalar,
     EvalRealConfig,
@@ -120,18 +121,40 @@ def eval_policy(
         from_idx = dataset.meta.episodes["dataset_from_index"][0]
         step = dataset[from_idx]
         init_arm_pose = step["observation.state"][:arm_dof].cpu().numpy()
+        init_waist = float(step["observation.state"][-1]) if has_waist else 0.0
+        commands_waist = has_waist and not cfg.motion
 
-        user_input = input("Enter 's' to initialize the robot and start the evaluation: ")
+        if cfg.dry_run:
+            logger_mp.warning("DRY RUN: the policy runs on live joints and cameras; nothing is sent to the robot.")
+            prompt = "Enter 's' to start the dry run: "
+        else:
+            prompt = "Enter 's' to move the robot to the start pose and start the evaluation: "
+        user_input = input(prompt)
         idx = 0
         print(f"user_input: {user_input}")
         full_state = None
         prev_cmd = None
+        dry_report = {"t": time.perf_counter(), "max_dev": 0.0, "joint": -1}
         if user_input.lower() == "s":
             # "The initial positions of the robot's arm and fingers take the initial positions during data recording."
-            logger_mp.info("Initializing robot to starting pose...")
-            tau = robot_interface["arm_ik"].solve_tau(init_arm_pose)
-            robot_interface["arm_ctrl"].ctrl_dual_arm(init_arm_pose, tau)
-            time.sleep(1.0)  # Give time for the robot to move
+            start = np.concatenate((init_arm_pose, [init_waist] if commands_waist else []))
+
+            def read_measured():
+                q = arm_ctrl.get_current_dual_arm_q()
+                return np.concatenate((q, [arm_ctrl.get_current_waist_yaw_q()] if commands_waist else []))
+
+            if cfg.dry_run:
+                away = np.abs(start - read_measured())
+                logger_mp.info(f"dry run: the start pose is {away.max():.2f} rad away (joint {int(away.argmax())}); not moving")
+            else:
+                def send(q):
+                    arm_ctrl.ctrl_dual_arm(q[:arm_dof], arm_ik.solve_tau(q[:arm_dof]))
+                    if commands_waist:
+                        arm_ctrl.ctrl_waist_yaw(float(q[arm_dof]))
+
+                ramp_vel = cfg.max_vel if cfg.max_vel > 0 else 0.5
+                logger_mp.info(f"Moving to the start pose at {ramp_vel} rad/s...")
+                ramp_to(start, read_measured, send, ramp_vel, cfg.frequency)
             # --- Run Main Loop ---
             logger_mp.info(f"Starting evaluation loop at {cfg.frequency} Hz.")
             while True:
@@ -177,13 +200,25 @@ def eval_policy(
                 if prev_cmd is None:
                     prev_cmd = measured.copy()
                 prev_cmd = limit_command(target, prev_cmd, measured, cfg.max_vel, cfg.max_lead, cfg.frequency)
-                arm_action = prev_cmd[:arm_dof]
-                tau = arm_ik.solve_tau(arm_action)
-                arm_ctrl.ctrl_dual_arm(arm_action, tau)
-                if has_waist and not cfg.motion:
-                    arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
+                if cfg.dry_run:
+                    # report, once a second, how far the policy wants to move from the measured joints
+                    dev = np.abs(target - measured)
+                    if dev.max() > dry_report["max_dev"]:
+                        dry_report["max_dev"], dry_report["joint"] = float(dev.max()), int(dev.argmax())
+                    if time.perf_counter() - dry_report["t"] >= 1.0:
+                        logger_mp.info(
+                            f"dry run step {idx}: max |policy - joints| {dry_report['max_dev']:.3f} rad "
+                            f"(joint {dry_report['joint']}) in the last second"
+                        )
+                        dry_report.update(t=time.perf_counter(), max_dev=0.0, joint=-1)
+                else:
+                    arm_action = prev_cmd[:arm_dof]
+                    tau = arm_ik.solve_tau(arm_action)
+                    arm_ctrl.ctrl_dual_arm(arm_action, tau)
+                    if commands_waist:
+                        arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
 
-                if cfg.ee:
+                if cfg.ee and not cfg.dry_run:
                     ee_action_start_idx = arm_dof
                     left_ee_action = action_np[ee_action_start_idx : ee_action_start_idx + ee_dof]
                     right_ee_action = action_np[ee_action_start_idx + ee_dof : ee_action_start_idx + 2 * ee_dof]

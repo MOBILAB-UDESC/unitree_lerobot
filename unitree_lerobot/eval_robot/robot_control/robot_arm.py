@@ -144,6 +144,9 @@ class G1_29_ArmController:
             self.msg.motor_cmd[id].q = self.all_motor_q[id]
         logger_mp.info("Lock OK!\n")
 
+        # Hold the current arm pose until the first command (the target started at zeros, which moved the
+        # arms to the zero pose at up to 20 rad/s as soon as the controller was created).
+        self.q_target = self.get_current_dual_arm_q()
         # initialize publish thread
         self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
         self.ctrl_lock = threading.Lock()
@@ -295,6 +298,39 @@ class G1_29_ArmController:
         return motor_index.value in wrist_motors
 
 
+class G1_ArmStateReader:
+    """Dry run: reads the G1 arm and waist joints from rt/lowstate and never publishes a command.
+
+    Has the read methods eval_g1.py uses from G1_29_ArmController / G1_23_ArmController, so the
+    evaluation loop runs unchanged while nothing is sent to the robot."""
+
+    def __init__(self, arm_index, simulation_mode=False):
+        self.arm_index = list(arm_index)
+        ChannelFactoryInitialize(1 if simulation_mode else 0)
+        self.lowstate_subscriber = ChannelSubscriber(kTopicLowState, hg_LowState)
+        self.lowstate_subscriber.Init()
+        self.lowstate_buffer = DataBuffer()
+        threading.Thread(target=self._subscribe_motor_state, daemon=True).start()
+        while not self.lowstate_buffer.GetData():
+            time.sleep(0.1)
+            logger_mp.warning("[G1_ArmStateReader] Waiting to subscribe dds...")
+        logger_mp.info("[G1_ArmStateReader] Subscribe dds ok (dry run: nothing is published).")
+
+    def _subscribe_motor_state(self):
+        while True:
+            msg = self.lowstate_subscriber.Read()
+            if msg is not None:
+                self.lowstate_buffer.SetData([m.q for m in msg.motor_state])
+            time.sleep(0.002)
+
+    def get_current_dual_arm_q(self):
+        q = self.lowstate_buffer.GetData()
+        return np.array([q[i] for i in self.arm_index])
+
+    def get_current_waist_yaw_q(self):
+        return float(self.lowstate_buffer.GetData()[G1_29_JointIndex.kWaistYaw])
+
+
 class G1_29_JointArmIndex(IntEnum):
     # Left arm
     kLeftShoulderPitch = 15
@@ -443,6 +479,9 @@ class G1_23_ArmController:
             self.msg.motor_cmd[id].q = self.all_motor_q[id]
         logger_mp.info("Lock OK!\n")
 
+        # Hold the current arm pose until the first command (the target started at zeros, which moved the
+        # arms to the zero pose at up to 20 rad/s as soon as the controller was created).
+        self.q_target = self.get_current_dual_arm_q()
         # initialize publish thread
         self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
         self.ctrl_lock = threading.Lock()
@@ -721,6 +760,9 @@ class H1_2_ArmController:
             self.msg.motor_cmd[id].q = self.all_motor_q[id]
         logger_mp.info("Lock OK!\n")
 
+        # Hold the current arm pose until the first command (the target started at zeros, which moved the
+        # arms to the zero pose at up to 20 rad/s as soon as the controller was created).
+        self.q_target = self.get_current_dual_arm_q()
         # initialize publish thread
         self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
         self.ctrl_lock = threading.Lock()
@@ -991,6 +1033,9 @@ class H1_ArmController:
             self.msg.motor_cmd[id].q = self.all_motor_q[id]
         logger_mp.info("Lock OK!\n")
 
+        # Hold the current arm pose until the first command (the target started at zeros, which moved the
+        # arms to the zero pose at up to 20 rad/s as soon as the controller was created).
+        self.q_target = self.get_current_dual_arm_q()
         # initialize publish thread
         self.publish_thread = threading.Thread(target=self._ctrl_motor_state)
         self.ctrl_lock = threading.Lock()
