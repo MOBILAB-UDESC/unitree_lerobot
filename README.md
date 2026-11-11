@@ -9,28 +9,21 @@
   </p>
 </div>
 
-> **MOBILAB-UDESC fork, branch `mobilab`.** This is Unitree's `unitree_lerobot` with fixes to `eval_g1.py`; everything else is unchanged, and all file and script names are Unitree's.
+> **MOBILAB-UDESC fork, branch `mobilab`.** This is Unitree's `unitree_lerobot` with fixes to `eval_g1.py` (section 4); everything else is unchanged, and all file and script names are Unitree's.
 >
 > | Fix | Flag |
 > | --- | --- |
-> | Policies that also have the waist yaw joint (arms + hands + waist, waist last) | `--waist=true` (default: off, as in Unitree's script) |
-> | Safety limits on the arm and waist commands | `--max_vel` (1.0 rad/s), `--max_lead` (0.25 rad), `0` = off |
+> | Policies trained with the waist yaw joint (state/action = arms + hands + waist, waist last) | `--waist=true`. **Only for such policies.** Default off = Unitree's layout (arms + hands). With the wrong setting the script stops before moving and says which one the policy needs |
+> | Safety limits on the arm and waist commands, also for the move to the start pose | `--max_vel` (default 1.0 rad/s), `--max_lead` (default 0.25 rad). `--max_vel=0` restores Unitree's unlimited jump to the start pose |
+> | The arms hold their current pose when the script connects (Unitree's controller starts with an all-zero arm target) | always on |
 > | The control loop no longer pauses while the network computes a new action chunk | `--replan=async` (default); `--replan=chunk` is the original behaviour |
-> | Works with the current image client; arms-only robots; one-lens head camera | `--image_host`, `--ee=none` |
+> | Works with the current image client; arms-only robots; one-lens head camera | `--image_host` (default `192.168.123.164`), `--ee=none`; the head camera follows the image server's `binocular` setting |
 > | More CPU threads for the network when there is no GPU | `--threads=4` (default `0` = PyTorch's own setting) |
+> | Use a simulator instead of the robot; use a local dataset folder | `--sim=true`, `--root=/path/to/dataset` |
 >
-> Example: a 15-joint policy (14 arm joints + waist yaw, no hands) on a PC without a GPU:
+> Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`. `--waist=true` needs `--arm=G1_29`.
 >
-> ```bash
-> python unitree_lerobot/eval_robot/eval_g1.py \
->     --policy.path=/path/to/pretrained_model --policy.device=cpu \
->     --repo_id=mobilab-udesc/g1_box_into_box_sim_scripted \
->     --arm=G1_29 --ee=none --waist=true --threads=4 --frequency=30
-> ```
->
-> Leave out `--waist=true` for a policy without the waist joint, and `--policy.device=cpu --threads=4` on a PC with a GPU. Raise the limits with, for example, `--max_vel=2.5 --max_lead=0.9`.
->
-> Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`. Tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim), not yet on the real robot.
+> Tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim) with a 15-joint ACT policy. **Not yet tested on the real robot, with hands, or with a policy without the waist.** The other scripts (`eval_g1_sim.py`, `eval_g1_dataset.py`, `replay_robot.py`) are Unitree's, unchanged.
 
 | Unitree Robotics repositories                      | link                                                                               |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------- |
@@ -307,9 +300,20 @@ To test your trained model on a real robot, you can use the eval_g1.py script lo
 # --episodes: The number of evaluation episodes; setting it to 0 uses the default value.
 # --frequency: The evaluation frequency (in Hz), used to control the time step of the evaluation.
 # --arm: The model of the robotic arm, (e.g., G1_29, G1_23).
-# --ee: The type of end-effector, (e.g., dex3, dex1, inspire1, brainco).
+# --ee: The type of end-effector, (e.g., dex3, dex1, inspire1, brainco; none = arms only).
 # --visualization: Whether to enable visualization; setting it to true enables it.
-# --send_real_robot: Whether to send commands to the real robot.
+# --send_real_robot: Whether to send commands to the real robot (only used by eval_g1_dataset.py;
+#                    eval_g1.py always sends).
+#
+# Added in this fork (eval_g1.py only):
+# --waist: true ONLY if the policy was trained with the waist yaw joint as the last value of its
+#          state and action (arms + hands + waist). Default false.
+# --max_vel: Speed limit of the arm (and waist) commands in rad/s, default 1.0; 0 = off.
+# --max_lead: How far a command may be ahead of the measured joint in rad, default 0.25; 0 = off.
+# --replan: async (default) computes the next action chunk in the background; chunk = original behaviour.
+# --image_host: Address of the image server, default 192.168.123.164.
+# --threads: PyTorch CPU threads, for a PC without a GPU (e.g. 4); default 0 = unchanged.
+# --sim: true to talk to a simulator (DDS domain 1) instead of the robot.
 
 
 python unitree_lerobot/eval_robot/eval_g1.py  \
@@ -321,6 +325,15 @@ python unitree_lerobot/eval_robot/eval_g1.py  \
     --arm="G1_29" \
     --ee="dex3" \
     --visualization=true \
+
+# A policy trained with the waist joint and no hands (e.g. mobilab-udesc/act-g1-box-into-box-sim):
+python unitree_lerobot/eval_robot/eval_g1.py  \
+    --policy.path=/path/to/pretrained_model \
+    --repo_id=mobilab-udesc/g1_box_into_box_sim_scripted \
+    --frequency=30 \
+    --arm="G1_29" \
+    --ee="none" \
+    --waist=true
 
 If you want to run inference tests in the unitree_sim_isaaclab simulation environment, please execute:
 

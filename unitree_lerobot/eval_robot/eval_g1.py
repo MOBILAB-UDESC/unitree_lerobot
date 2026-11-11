@@ -84,6 +84,9 @@ def eval_policy(
         arm_ctrl, arm_ik, ee_shared_mem, arm_dof, ee_dof = (
             robot_interface[key] for key in ["arm_ctrl", "arm_ik", "ee_shared_mem", "arm_dof", "ee_dof"]
         )
+        # The controller starts by streaming an all-zero arm target. Hold the measured pose instead, so the
+        # arms stay where they are until the start is confirmed below.
+        arm_ctrl.ctrl_dual_arm(arm_ctrl.get_current_dual_arm_q(), np.zeros(arm_dof))
 
         # --waist=true: the policy has the waist yaw as the LAST value of its state and action.
         state_dim = int(policy.config.input_features["observation.state"].shape[0])
@@ -129,9 +132,31 @@ def eval_policy(
         if user_input.lower() == "s":
             # "The initial positions of the robot's arm and fingers take the initial positions during data recording."
             logger_mp.info("Initializing robot to starting pose...")
-            tau = robot_interface["arm_ik"].solve_tau(init_arm_pose)
-            robot_interface["arm_ctrl"].ctrl_dual_arm(init_arm_pose, tau)
-            time.sleep(1.0)  # Give time for the robot to move
+            if cfg.max_vel > 0:
+                # Go to the start pose under the same limits as the policy: at most max_vel rad/s per joint,
+                # never more than max_lead rad ahead of the measured joints.
+                def measure():
+                    waist_q = [arm_ctrl.get_current_waist_yaw_q()] if has_waist else []
+                    return np.concatenate((arm_ctrl.get_current_dual_arm_q(), waist_q))
+
+                init_waist = [float(step["observation.state"][-1])] if has_waist else []
+                init_target = np.concatenate((init_arm_pose.astype(float), init_waist))
+                prev_cmd = measure()
+                distance = float(np.max(np.abs(init_target - prev_cmd)))
+                logger_mp.info(f"Start move: {distance:.2f} rad at up to {cfg.max_vel} rad/s")
+                deadline = time.perf_counter() + 3.0 * distance / cfg.max_vel + 3.0
+                while np.max(np.abs(init_target - prev_cmd)) > 1e-3 and time.perf_counter() < deadline:
+                    tick_start = time.perf_counter()
+                    prev_cmd = limit_command(init_target, prev_cmd, measure(), cfg.max_vel, cfg.max_lead, cfg.frequency)
+                    arm_ctrl.ctrl_dual_arm(prev_cmd[:arm_dof], arm_ik.solve_tau(prev_cmd[:arm_dof]))
+                    if has_waist and not cfg.motion:
+                        arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
+                    time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - tick_start)))
+                time.sleep(0.5)  # let the arms settle
+            else:  # limits off: Unitree's original jump to the start pose
+                tau = robot_interface["arm_ik"].solve_tau(init_arm_pose)
+                robot_interface["arm_ctrl"].ctrl_dual_arm(init_arm_pose, tau)
+                time.sleep(1.0)  # Give time for the robot to move
             # --- Run Main Loop ---
             logger_mp.info(f"Starting evaluation loop at {cfg.frequency} Hz.")
             while True:
