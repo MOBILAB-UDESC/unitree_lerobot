@@ -7,6 +7,8 @@ Refer to:   lerobot/lerobot/scripts/eval.py
 import time
 import torch
 import logging
+import traceback
+from functools import partial
 
 import numpy as np
 from pprint import pformat
@@ -34,8 +36,10 @@ from unitree_lerobot.eval_robot.make_robot import (
     process_images_and_observations,
 )
 from unitree_lerobot.eval_robot.utils.utils import (
-    cleanup_resources,
+    AsyncChunks,
+    limit_command,
     predict_action,
+    predict_chunk,
     to_list,
     to_scalar,
     EvalRealConfig,
@@ -68,27 +72,49 @@ def eval_policy(
         preprocessor.reset()
         postprocessor.reset()
 
-    image_info = None
+    image_client = None
     try:
         # --- Setup Phase ---
-        image_info = setup_image_client(cfg)
+        if cfg.ee.lower() in ("", "none"):  # arms only (e.g. the G1 with rubber hands)
+            cfg.ee = ""
+        image_client, camera_config = setup_image_client(cfg)
         robot_interface = setup_robot_interface(cfg)
 
         # Unpack interfaces for convenience
         arm_ctrl, arm_ik, ee_shared_mem, arm_dof, ee_dof = (
             robot_interface[key] for key in ["arm_ctrl", "arm_ik", "ee_shared_mem", "arm_dof", "ee_dof"]
         )
-        tv_img_array, wrist_img_array, tv_img_shape, wrist_img_shape, is_binocular, has_wrist_cam = (
-            image_info[key]
-            for key in [
-                "tv_img_array",
-                "wrist_img_array",
-                "tv_img_shape",
-                "wrist_img_shape",
-                "is_binocular",
-                "has_wrist_cam",
-            ]
+
+        # --waist=true: the policy has the waist yaw as the LAST value of its state and action.
+        state_dim = int(policy.config.input_features["observation.state"].shape[0])
+        base_dim = arm_dof + (2 * ee_dof if cfg.ee else 0)
+        has_waist = bool(cfg.waist)
+        if state_dim != base_dim + int(has_waist):
+            hint = ""
+            if state_dim == base_dim + 1:
+                hint = " -> this policy has the waist joint: add --waist=true"
+            elif state_dim == base_dim:
+                hint = " -> this policy has no waist joint: remove --waist=true"
+            raise ValueError(
+                f"policy state has {state_dim} values, but arm={cfg.arm} ee='{cfg.ee or 'none'}' "
+                f"waist={has_waist} gives {base_dim + int(has_waist)}{hint}"
+            )
+        if has_waist and cfg.motion:
+            logger_mp.warning("motion mode: the motion controller owns the waist, the policy's waist action is ignored")
+        logger_mp.info(
+            f"State/action layout: {arm_dof} arm + {base_dim - arm_dof} hand + {int(has_waist)} waist yaw | "
+            f"limits: max_vel {cfg.max_vel} rad/s, max_lead {cfg.max_lead} rad (0 = off)"
         )
+        image_keys = list(policy.config.image_features)
+        device = get_safe_torch_device(policy.config.device)
+        actor = None
+        if cfg.replan == "async":
+            actor = AsyncChunks(
+                lambda obs: predict_chunk(
+                    obs, policy, device, preprocessor, postprocessor, policy.config.use_amp, step["task"],
+                    use_dataset=cfg.use_dataset, robot_type=None,
+                )
+            )
 
         # Get initial pose from the first step of the dataset
         from_idx = dataset.meta.episodes["dataset_from_index"][0]
@@ -99,6 +125,7 @@ def eval_policy(
         idx = 0
         print(f"user_input: {user_input}")
         full_state = None
+        prev_cmd = None
         if user_input.lower() == "s":
             # "The initial positions of the robot's arm and fingers take the initial positions during data recording."
             logger_mp.info("Initializing robot to starting pose...")
@@ -110,36 +137,51 @@ def eval_policy(
             while True:
                 loop_start_time = time.perf_counter()
                 # 1. Get Observations
-                observation, current_arm_q = process_images_and_observations(
-                    tv_img_array, wrist_img_array, tv_img_shape, wrist_img_shape, is_binocular, has_wrist_cam, arm_ctrl
-                )
+                observation, current_arm_q = process_images_and_observations(image_client, camera_config, arm_ctrl)
+                missing = [k for k in image_keys if k not in {cfg.rename_map.get(o, o) for o in observation}]
+                if missing or current_arm_q is None:
+                    logger_mp.warning(f"Waiting for {missing or 'the arm state'}")
+                    time.sleep(0.1)
+                    continue
                 left_ee_state = right_ee_state = np.array([])
                 if cfg.ee:
                     with ee_shared_mem["lock"]:
                         full_state = np.array(ee_shared_mem["state"][:])
                         left_ee_state = full_state[:ee_dof]
                         right_ee_state = full_state[ee_dof:]
+                waist_state = np.array([arm_ctrl.get_current_waist_yaw_q()]) if has_waist else np.array([])
                 state_tensor = torch.from_numpy(
-                    np.concatenate((current_arm_q, left_ee_state, right_ee_state), axis=0)
+                    np.concatenate((current_arm_q, left_ee_state, right_ee_state, waist_state), axis=0)
                 ).float()
                 observation["observation.state"] = state_tensor
                 # 2. Get Action from Policy
-                action = predict_action(
-                    observation,
-                    policy,
-                    get_safe_torch_device(policy.config.device),
-                    preprocessor,
-                    postprocessor,
-                    policy.config.use_amp,
-                    step["task"],
-                    use_dataset=cfg.use_dataset,
-                    robot_type=None,
-                )
-                action_np = action.cpu().numpy()
+                if actor is not None:  # never waits for the network (except for the very first action)
+                    action_np = np.asarray(actor(observation))
+                else:
+                    action = predict_action(
+                        observation,
+                        policy,
+                        device,
+                        preprocessor,
+                        postprocessor,
+                        policy.config.use_amp,
+                        step["task"],
+                        use_dataset=cfg.use_dataset,
+                        robot_type=None,
+                    )
+                    action_np = action.cpu().numpy()
                 # 3. Execute Action
-                arm_action = action_np[:arm_dof]
+                # arms (+ waist) go through the safety limits; the hands are sent as predicted
+                measured = np.concatenate((current_arm_q, waist_state))
+                target = np.concatenate((action_np[:arm_dof], action_np[-1:] if has_waist else []))
+                if prev_cmd is None:
+                    prev_cmd = measured.copy()
+                prev_cmd = limit_command(target, prev_cmd, measured, cfg.max_vel, cfg.max_lead, cfg.frequency)
+                arm_action = prev_cmd[:arm_dof]
                 tau = arm_ik.solve_tau(arm_action)
                 arm_ctrl.ctrl_dual_arm(arm_action, tau)
+                if has_waist and not cfg.motion:
+                    arm_ctrl.ctrl_waist_yaw(float(prev_cmd[arm_dof]))
 
                 if cfg.ee:
                     ee_action_start_idx = arm_dof
@@ -160,10 +202,10 @@ def eval_policy(
                 # Maintain frequency
                 time.sleep(max(0, (1.0 / cfg.frequency) - (time.perf_counter() - loop_start_time)))
     except Exception as e:
-        logger_mp.info(f"An error occurred: {e}")
+        logger_mp.error(f"An error occurred: {e}\n{traceback.format_exc()}")
     finally:
-        if image_info:
-            cleanup_resources(image_info)
+        if image_client is not None:
+            image_client.close()
 
 
 @parser.wrap()
@@ -177,11 +219,16 @@ def eval_main(cfg: EvalRealConfig):
     torch.backends.cuda.matmul.allow_tf32 = True
 
     logging.info("Making policy.")
+    if cfg.threads:
+        torch.set_num_threads(cfg.threads)
 
-    dataset = LeRobotDataset(repo_id=cfg.repo_id)
+    dataset = LeRobotDataset(repo_id=cfg.repo_id, root=cfg.root or None)
 
     policy = make_policy(cfg=cfg.policy, ds_meta=dataset.meta)
     policy.eval()
+    # A dataset recorded with one head view called cam_head: feed it the (left) head image.
+    if "observation.images.cam_head" in policy.config.image_features and not cfg.rename_map:
+        cfg.rename_map = {"observation.images.cam_left_high": "observation.images.cam_head"}
 
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=cfg.policy,

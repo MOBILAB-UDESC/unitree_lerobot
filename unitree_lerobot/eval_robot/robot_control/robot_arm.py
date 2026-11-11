@@ -211,6 +211,14 @@ class G1_29_ArmController:
             self.q_target = q_target
             self.tauff_target = tauff_target
 
+    def ctrl_waist_yaw(self, q_target):
+        """Set the waist yaw target (rad). Until this is called the waist stays locked at its start pose."""
+        self.msg.motor_cmd[G1_29_JointIndex.kWaistYaw].q = float(np.clip(q_target, -1.0, 1.0))
+
+    def get_current_waist_yaw_q(self):
+        """Return current state q of the waist yaw motor."""
+        return float(self.lowstate_buffer.GetData().motor_state[G1_29_JointIndex.kWaistYaw].q)
+
     def get_mode_machine(self):
         """Return current dds mode machine."""
         return self.lowstate_subscriber.Read().mode_machine
