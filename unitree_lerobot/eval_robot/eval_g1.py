@@ -186,7 +186,9 @@ def eval_policy(
                 loop_start_time = time.perf_counter()
                 # 1. Get Observations
                 observation, current_arm_q = process_images_and_observations(image_client, camera_config, arm_ctrl)
-                missing = [k for k in image_keys if k not in {cfg.rename_map.get(o, o) for o in observation}]
+                # a camera whose first frame has not arrived yet comes back as None (or not at all)
+                have = {cfg.rename_map.get(o, o) for o, v in observation.items() if v is not None}
+                missing = [k for k in image_keys if k not in have]
                 if missing or current_arm_q is None:
                     logger_mp.warning(f"Waiting for {missing or 'the arm state'}")
                     time.sleep(0.1)

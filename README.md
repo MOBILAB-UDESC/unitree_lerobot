@@ -327,6 +327,15 @@ python unitree_lerobot/eval_robot/eval_g1.py  \
     --ee="dex3" \
     --visualization=true \
 
+# A G1 without hands, policy trained on arms only (14 joints), e.g. from a dataset recorded with
+# xr_teleoperate (cam_head + two wrist cameras): no --waist
+python unitree_lerobot/eval_robot/eval_g1.py  \
+    --policy.path=/path/to/pretrained_model \
+    --repo_id=mobilab-udesc/UnitreeG1-CubePickAndPlace-LeRobot \
+    --frequency=30 \
+    --arm="G1_29" \
+    --ee="none"
+
 # A policy trained with the waist joint and no hands (e.g. mobilab-udesc/act-g1-box-into-box-sim):
 python unitree_lerobot/eval_robot/eval_g1.py  \
     --policy.path=/path/to/pretrained_model \
