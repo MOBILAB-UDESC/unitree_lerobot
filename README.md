@@ -21,8 +21,9 @@
 > | The arms hold their current pose when the controller starts (they used to move to the zero pose at up to 20 rad/s while waiting for `s`) | |
 > | The move to the dataset's start pose is speed-limited (it used to be a jump) | `--max_vel` (0.5 rad/s if 0) |
 > | Dry run: live joints and cameras, policy runs, nothing is sent to the robot; logs how far the policy wants to move | `--dry_run=true` |
+> | rerun is only imported with `--visualization=true`, so it needn't be installed (rerun-sdk >= 0.24 needs numpy 2, which the robot's pinocchio build doesn't support) | |
 >
-> Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`, `image_server/image_client.py`; robot-free tests in `test/test_eval_safety.py`. The first four fixes were tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim); the last four only by those tests so far. None has run on the real robot yet.
+> Changed files, all in `unitree_lerobot/eval_robot/`: `eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`, `image_server/image_client.py`; robot-free tests in `test/test_eval_safety.py`. The first four fixes were tested against the MuJoCo simulator of [g1-mujoco-real2sim](https://github.com/MOBILAB-UDESC/g1-mujoco-real2sim); the others haven't run in the simulator yet (their helpers are covered by those tests). None has run on the real robot yet.
 
 | Unitree Robotics repositories                      | link                                                                               |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------- |

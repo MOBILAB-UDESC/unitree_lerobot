@@ -45,7 +45,6 @@ from unitree_lerobot.eval_robot.utils.utils import (
     to_scalar,
     EvalRealConfig,
 )
-from unitree_lerobot.eval_robot.utils.rerun_visualizer import RerunLogger, visualization_data
 
 import logging_mp
 
@@ -65,6 +64,10 @@ def eval_policy(
     logger_mp.info(f"Arguments: {cfg}")
 
     if cfg.visualization:
+        # imported here: rerun is only needed for --visualization (and isn't installed on robots
+        # whose env keeps numpy 1.x, since rerun-sdk >= 0.24 needs numpy 2)
+        from unitree_lerobot.eval_robot.utils.rerun_visualizer import RerunLogger, visualization_data
+
         rerun_logger = RerunLogger()
 
     # Reset policy and processor if they are provided
