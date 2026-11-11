@@ -9,6 +9,15 @@
   </p>
 </div>
 
+> **MOBILAB-UDESC fork, branch `mobilab`.** This is Unitree's `unitree_lerobot` with two additions; everything else is unchanged.
+>
+> | Addition | Where |
+> | --- | --- |
+> | G1 in MuJoCo for unmodified `xr_teleoperate`: wrist cameras, real2sim lab scene, LeRobot v3.0 recording, ACT training and rollouts | [`g1_mujoco_real2sim/`](g1_mujoco_real2sim/README.md) (self-contained, has its own README and install scripts) |
+> | Fixes to `eval_g1.py`: `--waist=true` for policies with the waist yaw joint, `--max_vel` / `--max_lead` safety limits, `--replan=async` (no pause for inference), current image client, `--ee=none` | `unitree_lerobot/eval_robot/` (`eval_g1.py`, `make_robot.py`, `utils/utils.py`, `robot_control/robot_arm.py`) |
+>
+> The fixes were tested against the MuJoCo simulator in `g1_mujoco_real2sim/`, not yet on the real robot.
+
 | Unitree Robotics repositories                      | link                                                                               |
 | -------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | Unitree Datasets                                   | [unitree datasets](https://huggingface.co/unitreerobotics)                         |

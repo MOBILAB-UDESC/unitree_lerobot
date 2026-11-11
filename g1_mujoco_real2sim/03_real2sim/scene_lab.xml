@@ -1,0 +1,114 @@
+<!--
+  Real2sim lab scene: the MOBILAB desk task (put the bubble-wrapped box into the cardboard box).
+  Props are modelled in Blender (assets/lab/blender_build_lab.py) with textures sampled from the
+  reference photos (assets/lab/make_textures.py). Robot-mounted parts (D405 wrist cameras, gloves,
+  head camera) are added by lab_scene.py.
+
+  Frame: robot pelvis at the origin facing +x, robot's left = +y. Measured on the real setup:
+  pelvis centre 22 cm from the desk's near edge and 46 cm from the desk end on the robot's right.
+  Desk 125 x 45 cm, 74 cm high -> desk centre at x = 0.22 + 0.225, y = -0.46 + 0.625.
+  Free bodies are task objects: reset/randomised by the sim and published on rt/sim_state.
+  Wrapped box start pose: centre between the palms at the squeeze in the 52 real episodes (forward
+  kinematics of the recorded joints): x 0.40 +- 0.03, y -0.04 +- 0.02 (robot frame = world here).
+  Cardboard box (measured on the real setup, glued to the desk): near wall 5.5 cm behind the desk's near
+  edge (x 0.275..0.605), right wall 17 cm left of the hip centre and far wall 13 cm from the desk's left
+  end (y 0.17..0.66) -> centre (0.44, 0.415).
+-->
+<mujoco model="g1_lab">
+  <compiler meshdir="assets/lab/mesh" texturedir="assets/lab/tex"/>
+
+  <visual>
+    <!-- The lab is lit by rows of fluorescent strips: bright, soft, almost shadowless. So: mostly ambient
+         light, weak directional lights (one faint shadow). Level and colours: calib/photometric.json. -->
+    <headlight diffuse="0.22 0.22 0.22" ambient="0.55 0.55 0.55" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-160" elevation="-25" offwidth="1280" offheight="960"/>
+    <quality shadowsize="2048"/>
+  </visual>
+
+  <default>
+    <default class="visual">
+      <geom contype="0" conaffinity="0" group="2"/>
+    </default>
+    <default class="collision">
+      <geom group="3" rgba="0.8 0.2 0.2 0.3"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.92 0.93 0.95" rgb2="0.78 0.79 0.82" width="512" height="3072"/>
+    <texture name="floor_tiles" type="2d" builtin="checker" rgb1="0.86 0.86 0.85" rgb2="0.84 0.84 0.83"
+             mark="edge" markrgb="0.74 0.74 0.73" width="512" height="512"/>
+    <material name="floor_tiles" texture="floor_tiles" texrepeat="0.8333 0.8333" texuniform="true" reflectance="0.05"/>
+    <texture name="foam_mat" type="2d" builtin="checker" rgb1="0.27 0.27 0.28" rgb2="0.30 0.30 0.31"
+             mark="edge" markrgb="0.22 0.22 0.23" width="512" height="512"/>
+    <material name="foam_mat" texture="foam_mat" texrepeat="0.8333 0.8333" texuniform="true" specular="0.05"/>
+    <material name="wall" rgba="0.93 0.93 0.92 1" specular="0.05"/>
+
+    <texture name="desk_top" type="2d" file="desk_top.png"/>
+    <texture name="desk_panel" type="2d" file="desk_panel.png"/>
+    <texture name="desk_leg" type="2d" file="desk_leg.png"/>
+    <texture name="cardboard_out" type="2d" file="cardboard_out.png"/>
+    <texture name="cardboard_in" type="2d" file="cardboard_in.png"/>
+    <texture name="bubble_wrap" type="2d" file="bubble_wrap.png"/>
+    <material name="desk_top" texture="desk_top" specular="0.25" shininess="0.4"/>
+    <material name="desk_panel" texture="desk_panel" specular="0.15"/>
+    <material name="desk_leg" texture="desk_leg" specular="0.4" shininess="0.6"/>
+    <material name="cardboard_out" texture="cardboard_out" specular="0.05"/>
+    <material name="cardboard_in" texture="cardboard_in" specular="0.05"/>
+    <!-- texture = real camera frames (assets/lab/make_wrapped_box.py); partly self-lit so the recorded look
+         survives the sim's lighting, glossy like the plastic -->
+    <material name="bubble_wrap" texture="bubble_wrap" specular="0.6" shininess="0.8" emission="0.45" rgba="1 1 1 1"/>
+
+    <mesh name="desk_top" file="desk_top.obj"/>
+    <mesh name="desk_panel" file="desk_panel.obj"/>
+    <mesh name="desk_legs" file="desk_legs.obj"/>
+    <mesh name="cardboard_outer" file="cardboard_outer.obj"/>
+    <mesh name="cardboard_inner" file="cardboard_inner.obj"/>
+    <mesh name="wrapped_box" file="wrapped_box.obj"/>
+  </asset>
+
+  <!-- the room around the desk: workbench + printers, cabinet, walls, ceiling (assets/lab/make_room.py) -->
+  <include file="scene_room.xml"/>
+
+  <worldbody>
+    <light name="ceiling_1" pos="0.6 0.4 2.8" dir="0 0 -1" diffuse="0.28 0.28 0.28" castshadow="true"/>
+    <light name="ceiling_2" pos="-0.8 -0.8 2.8" dir="0.2 0.2 -1" diffuse="0.14 0.14 0.14" castshadow="false"/>
+    <light name="ceiling_3" pos="1.6 1.2 2.8" dir="-0.2 -0.2 -1" diffuse="0.14 0.14 0.14" castshadow="false"/>
+
+    <geom name="floor" type="plane" size="0 0 0.05" material="floor_tiles"/>
+    <!-- grey foam mats under the robot area, ending under the desk; 60 cm floor tiles beyond (photo 9) -->
+    <geom name="foam_mats" class="visual" type="box" size="1.8 2.4 0.004" pos="-1.2 1.2 0.004" material="foam_mat"/>
+
+    <!-- Desk (static). Visual meshes + simple collision boxes. -->
+    <body name="desk" pos="0.445 0.165 0">
+      <geom class="visual" type="mesh" mesh="desk_top" material="desk_top"/>
+      <geom class="visual" type="mesh" mesh="desk_panel" material="desk_panel"/>
+      <geom class="visual" type="mesh" mesh="desk_legs" material="desk_leg"/>
+      <geom name="desk_top_col" class="collision" type="box" size="0.225 0.625 0.0125" pos="0 0 0.7275" friction="0.6 0.005 0.0001"/>
+    </body>
+
+    <!-- Cardboard box 49 x 33 x 18 cm, open top, long side along y. Glued to the desk on the real setup:
+         a static body (lab_scene.LabTask moves it via body_pos when randomising). -->
+    <body name="cardboard_box" pos="0.44 0.415 0.7405">
+      <geom class="visual" type="mesh" mesh="cardboard_outer" material="cardboard_out"/>
+      <geom class="visual" type="mesh" mesh="cardboard_inner" material="cardboard_in"/>
+      <geom class="collision" type="box" size="0.165 0.245 0.002" pos="0 0 0.002" friction="0.8 0.005 0.0001"/>
+      <geom class="collision" type="box" size="0.002 0.245 0.09" pos=" 0.163 0 0.09"/>
+      <geom class="collision" type="box" size="0.002 0.245 0.09" pos="-0.163 0 0.09"/>
+      <geom class="collision" type="box" size="0.165 0.002 0.09" pos="0  0.243 0.09"/>
+      <geom class="collision" type="box" size="0.165 0.002 0.09" pos="0 -0.243 0.09"/>
+    </body>
+
+    <!-- Bubble-wrapped box 23 x 23 x 27 cm, < 0.5 kg; soft contact for the bubble wrap's give. -->
+    <body name="wrapped_box" pos="0.40 -0.05 0.7405">
+      <freejoint name="wrapped_box_free"/>
+      <inertial pos="0 0 0.135" mass="0.35" diaginertia="0.0037 0.0037 0.0031"/>
+      <geom class="visual" type="mesh" mesh="wrapped_box" material="bubble_wrap"/>
+      <!-- condim 4 = torsional friction: a gloved palm pressed into bubble wrap is a contact patch that
+           resists the box swinging about the squeeze axis (point contacts would let it pivot freely). -->
+      <geom name="wrapped_box_col" class="collision" type="box" size="0.113 0.113 0.133" pos="0 0 0.133"
+            condim="4" friction="1.5 0.06 0.001" solref="0.015 1" solimp="0.85 0.95 0.004"/>
+    </body>
+  </worldbody>
+</mujoco>
